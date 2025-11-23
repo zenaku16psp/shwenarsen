@@ -130,7 +130,7 @@ async def start_pm(client, message: Message, _):
 
             await lols.edit_text("**⚡ѕтαятιиg.**")
             await lols.edit_text("**⚡ѕтαятιиg....**")
-            m = await message.reply_sticker("CAACAgUAAxkBAAEP1i5pIb-6g_bHNP8QwbdEytFqgWiUkQACgRAAAi65WFdJmOADHJ9XLDYE")
+            m = await message.reply_sticker("CAACAgUAAxkBAAEP1ixpIb-lwxNpCj51-jphT9P9IZFwwwAC9Q8AAhoRWFeNGcXcMK9QQDYE")
             if message.chat.photo:
 
                 userss_photo = await app.download_media(
