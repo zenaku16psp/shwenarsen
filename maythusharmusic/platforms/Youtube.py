@@ -474,7 +474,7 @@ class YouTubeAPI:
             ydl_opts["postprocessors"] = [
                 {
                     "key": "FFmpegExtractAudio",
-                    "preferredcodec": "opus", # .opus file ကို ထုတ်ပါမယ်
+                    "preferredcodec": "mp3", # .opus file ကို ထုတ်ပါမယ်
                     "preferredquality": "320",
                 }
             ]
