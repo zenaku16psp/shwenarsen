@@ -1,6 +1,7 @@
 import asyncio
 import os
-import traceback  # <-- 1. NameError အတွက် ဒီတစ်ကြောင်း ထည့်ပါ
+import sys
+import traceback
 from datetime import datetime, timedelta
 from typing import Union
 
@@ -59,33 +60,106 @@ async def _clear_(chat_id: int) -> None:
 
 class Call:
     def __init__(self):
+        # Client တွေကို အသံထွက်ကြည့်လင် ကောင်းအောင် configure လုပ်ခြင်း
+        client_config = {
+            "app_version": "1.0.0",
+            "device_model": "Desktop",
+            "system_version": "Windows 10",
+            "lang_code": "en",
+            "ipv6": False,
+            "proxy": None
+        }
+        
         self.userbot1 = Client(
-            "maythusharmusic1", config.API_ID, config.API_HASH, session_string=config.STRING1
+            name="maythusharmusic1",
+            api_id=config.API_ID,
+            api_hash=config.API_HASH,
+            session_string=config.STRING1,
+            **client_config
         ) if config.STRING1 else None
         self.one = PyTgCalls(self.userbot1) if self.userbot1 else None
 
         self.userbot2 = Client(
-            "maythusharmusic2", config.API_ID, config.API_HASH, session_string=config.STRING2
+            name="maythusharmusic2",
+            api_id=config.API_ID,
+            api_hash=config.API_HASH,
+            session_string=config.STRING2,
+            **client_config
         ) if config.STRING2 else None
         self.two = PyTgCalls(self.userbot2) if self.userbot2 else None
 
         self.userbot3 = Client(
-            "maythusharmusic3", config.API_ID, config.API_HASH, session_string=config.STRING3
+            name="maythusharmusic3",
+            api_id=config.API_ID,
+            api_hash=config.API_HASH,
+            session_string=config.STRING3,
+            **client_config
         ) if config.STRING3 else None
         self.three = PyTgCalls(self.userbot3) if self.userbot3 else None
 
         self.userbot4 = Client(
-            "maythusharmusic4", config.API_ID, config.API_HASH, session_string=config.STRING4
+            name="maythusharmusic4",
+            api_id=config.API_ID,
+            api_hash=config.API_HASH,
+            session_string=config.STRING4,
+            **client_config
         ) if config.STRING4 else None
         self.four = PyTgCalls(self.userbot4) if self.userbot4 else None
 
         self.userbot5 = Client(
-            "maythusharmusic5", config.API_ID, config.API_HASH, session_string=config.STRING5
+            name="maythusharmusic5",
+            api_id=config.API_ID,
+            api_hash=config.API_HASH,
+            session_string=config.STRING5,
+            **client_config
         ) if config.STRING5 else None
         self.five = PyTgCalls(self.userbot5) if self.userbot5 else None
 
         self.active_calls: set[int] = set()
+        
+        # အသံထွက်ကြည့်လင် အတွက် custom parameters
+        self.audio_enhancement = {
+            "bass_boost": True,
+            "noise_reduction": True,
+            "volume_normalization": True,
+            "equalizer": "pop"  # pop, rock, classical, bass_boost, treble_boost
+        }
 
+    def get_enhanced_ffmpeg_params(self, bass_boost: bool = True) -> str:
+        """အသံထွက်ကြည့်လင် ပြတ်သားစေရန် FFmpeg parameters"""
+        params = []
+        
+        # Volume ကို အနည်းငယ်မြှင့်ပေးခြင်း
+        params.append("volume=1.3")
+        
+        # Bass boost ထည့်ခြင်း
+        if bass_boost and self.audio_enhancement["bass_boost"]:
+            params.append("bass=g=8:f=100")
+            
+        # Equalizer settings
+        if self.audio_enhancement["equalizer"] == "pop":
+            params.append("equalizer=f=100:width_type=h:width=100:g=5")
+            params.append("equalizer=f=1000:width_type=h:width=100:g=3")
+            params.append("equalizer=f=5000:width_type=h:width=100:g=2")
+        elif self.audio_enhancement["equalizer"] == "bass_boost":
+            params.append("equalizer=f=60:width_type=h:width=50:g=10")
+            params.append("equalizer=f=170:width_type=h:width=100:g=8")
+            
+        # Noise reduction
+        if self.audio_enhancement["noise_reduction"]:
+            params.append("afftdn=nr=20:nf=-25")
+            
+        # Dynamic audio normalization
+        if self.audio_enhancement["volume_normalization"]:
+            params.append("dynaudnorm")
+            
+        # High pass filter to reduce low-frequency noise
+        params.append("highpass=f=80")
+        
+        # Compressor to make audio more consistent
+        params.append("compand=attacks=0.3:decays=0.8:points=-80/-80|-40/-15|-20/-12|0/-7")
+        
+        return f"-af '{','.join(params)}'"
 
     @capture_internal_err
     async def pause_stream(self, chat_id: int) -> None:
@@ -117,11 +191,10 @@ class Call:
             await assistant.leave_call(chat_id)
         except NoActiveGroupCall:
             pass
-        except Exception:
-            pass
+        except Exception as e:
+            LOGGER(__name__).error(f"Error leaving call: {e}")
         finally:
             self.active_calls.discard(chat_id)
-
 
     @capture_internal_err
     async def force_stop_stream(self, chat_id: int) -> None:
@@ -141,16 +214,21 @@ class Call:
             await assistant.leave_call(chat_id)
         except NoActiveGroupCall:
             pass
-        except Exception:
-            pass
+        except Exception as e:
+            LOGGER(__name__).error(f"Error leaving call in force stop: {e}")
         finally:
             self.active_calls.discard(chat_id)
-
 
     @capture_internal_err
     async def skip_stream(self, chat_id: int, link: str, video: Union[bool, str] = None, image: Union[bool, str] = None) -> None:
         assistant = await group_assistant(self, chat_id)
-        stream = dynamic_media_stream(path=link, video=bool(video))
+        # အသံထွက်ကြည့်လင် ပြတ်သားစေရန် enhanced parameters
+        enhanced_params = self.get_enhanced_ffmpeg_params()
+        stream = dynamic_media_stream(
+            path=link, 
+            video=bool(video),
+            ffmpeg_params=enhanced_params
+        )
         await assistant.play(chat_id, stream)
 
     @capture_internal_err
@@ -162,12 +240,16 @@ class Call:
     @capture_internal_err
     async def change_volume(self, chat_id: int, volume: int) -> None:
         assistant = await group_assistant(self, chat_id)
-        await assistant.change_volume_call(chat_id, volume)
+        # Volume ကို အနည်းငယ်ပိုမြှင့်ပေးခြင်း (clarity အတွက်)
+        enhanced_volume = min(200, int(volume * 1.2))  # 20% ပိုမြှင့်ပေးခြင်း
+        await assistant.change_volume_call(chat_id, enhanced_volume)
 
     @capture_internal_err
     async def seek_stream(self, chat_id: int, file_path: str, to_seek: str, duration: str, mode: str) -> None:
         assistant = await group_assistant(self, chat_id)
-        ffmpeg_params = f"-ss {to_seek} -to {duration}"
+        # Enhanced audio parameters ထည့်ပေးခြင်း
+        enhanced_params = self.get_enhanced_ffmpeg_params()
+        ffmpeg_params = f"-ss {to_seek} -to {duration} {enhanced_params}"
         is_video = mode == "video"
         stream = dynamic_media_stream(path=file_path, video=is_video, ffmpeg_params=ffmpeg_params)
         await assistant.play(chat_id, stream)
@@ -185,19 +267,37 @@ class Call:
 
         if not os.path.exists(out):
             vs = str(2.0 / float(speed))
-            cmd = f"ffmpeg -i {file_path} -filter:v setpts={vs}*PTS -filter:a atempo={speed} {out}"
-            proc = await asyncio.create_subprocess_shell(cmd, stdin=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
-            await proc.communicate()
+            # Enhanced audio processing ထည့်ပေးခြင်း
+            audio_filters = self.get_enhanced_ffmpeg_params().replace("-af '", "").replace("'", "")
+            cmd = f"ffmpeg -i {file_path} -filter:v setpts={vs}*PTS -filter:a atempo={speed},{audio_filters} {out}"
+            
+            LOGGER(__name__).info(f"Processing speedup with enhanced audio: {cmd}")
+            
+            proc = await asyncio.create_subprocess_shell(
+                cmd, 
+                stdin=asyncio.subprocess.PIPE, 
+                stderr=asyncio.subprocess.PIPE
+            )
+            _, stderr = await proc.communicate()
+            
+            if proc.returncode != 0:
+                error_msg = stderr.decode() if stderr else "Unknown error"
+                LOGGER(__name__).error(f"FFmpeg error: {error_msg}")
+                raise AssistantErr(f"Failed to process speed change: {error_msg}")
 
         dur = int(await asyncio.get_event_loop().run_in_executor(None, check_duration, out))
         played, con_seconds = speed_converter(playing[0]["played"], speed)
         duration_min = seconds_to_min(dur)
         is_video = playing[0]["streamtype"] == "video"
-        ffmpeg_params = f"-ss {played} -to {duration_min}"
+        
+        # Enhanced parameters for playback
+        enhanced_params = self.get_enhanced_ffmpeg_params()
+        ffmpeg_params = f"-ss {played} -to {duration_min} {enhanced_params}"
         stream = dynamic_media_stream(path=out, video=is_video, ffmpeg_params=ffmpeg_params)
 
         if chat_id in db and db[chat_id] and db[chat_id][0].get("file") == file_path:
             await assistant.play(chat_id, stream)
+            LOGGER(__name__).info(f"Playing speedup stream with enhanced audio in chat {chat_id}")
         else:
             raise AssistantErr("Stream mismatch during speedup.")
 
@@ -211,18 +311,26 @@ class Call:
             "old_second": db[chat_id][0].get("seconds"),
         })
 
-
     @capture_internal_err
     async def stream_call(self, link: str) -> None:
         assistant = await group_assistant(self, config.LOGGER_ID)
         try:
-            await assistant.play(config.LOGGER_ID, MediaStream(link))
+            # Enhanced audio for test stream
+            enhanced_params = self.get_enhanced_ffmpeg_params()
+            stream = MediaStream(
+                link,
+                audio_parameters=AudioQuality.HIGH,
+                ffmpeg_parameters=enhanced_params
+            )
+            await assistant.play(config.LOGGER_ID, stream)
             await asyncio.sleep(8)
+        except Exception as e:
+            LOGGER(__name__).error(f"Error in stream_call: {e}")
         finally:
             try:
                 await assistant.leave_call(config.LOGGER_ID)
-            except:
-                pass
+            except Exception as e:
+                LOGGER(__name__).error(f"Error leaving logger call: {e}")
 
     @capture_internal_err
     async def join_call(
@@ -236,18 +344,28 @@ class Call:
         assistant = await group_assistant(self, chat_id)
         lang = await get_lang(chat_id)
         _ = get_string(lang)
-        stream = dynamic_media_stream(path=link, video=bool(video))
+        
+        # Enhanced audio parameters
+        enhanced_params = self.get_enhanced_ffmpeg_params()
+        stream = dynamic_media_stream(
+            path=link, 
+            video=bool(video),
+            ffmpeg_params=enhanced_params
+        )
 
         try:
             await assistant.play(chat_id, stream)
+            LOGGER(__name__).info(f"Joined call in chat {chat_id} with enhanced audio")
         except (NoActiveGroupCall, ChatAdminRequired):
             raise AssistantErr(_["call_8"])
         except TelegramServerError:
             raise AssistantErr(_["call_10"])
         except Exception as e:
+            LOGGER(__name__).error(f"Join call error: {traceback.format_exc()}")
             raise AssistantErr(
                 f"ᴜɴᴀʙʟᴇ ᴛᴏ ᴊᴏɪɴ ᴛʜᴇ ɢʀᴏᴜᴘ ᴄᴀʟʟ.\nRᴇᴀsᴏɴ: {e}"
             )
+        
         self.active_calls.add(chat_id)
         await add_active_chat(chat_id)
         await music_on(chat_id)
@@ -260,38 +378,101 @@ class Call:
             if users == 1:
                 autoend[chat_id] = datetime.now() + timedelta(minutes=1)
 
-
     @capture_internal_err
     async def play(self, client, chat_id: int) -> None:
+        # ပထမဆုံး check လုပ်ရန် db မှာ chat_id ရှိမရှိ စစ်ဆေးပါ
+        if chat_id not in db or not db.get(chat_id):
+            LOGGER(__name__).warning(f"No queue found for chat {chat_id}, cleaning up...")
+            await _clear_(chat_id)
+            if chat_id in self.active_calls:
+                try:
+                    await client.leave_call(chat_id)
+                except NoActiveGroupCall:
+                    pass
+                except Exception as e:
+                    LOGGER(__name__).error(f"Error leaving call: {e}")
+                finally:
+                    self.active_calls.discard(chat_id)
+            return
+        
         check = db.get(chat_id)
         popped = None
         loop = await get_loop(chat_id)
+        
         try:
+            # check list က empty မဖြစ်ကြောင်း သေချာအောင်လုပ်ပါ
+            if not check or len(check) == 0:
+                LOGGER(__name__).warning(f"Empty queue for chat {chat_id}, cleaning up...")
+                await _clear_(chat_id)
+                if chat_id in self.active_calls:
+                    try:
+                        await client.leave_call(chat_id)
+                    except NoActiveGroupCall:
+                        pass
+                    except Exception as e:
+                        LOGGER(__name__).error(f"Error leaving call: {e}")
+                    finally:
+                        self.active_calls.discard(chat_id)
+                return
+            
             if loop == 0:
                 popped = check.pop(0)
             else:
                 loop = loop - 1
                 await set_loop(chat_id, loop)
-            await auto_clean(popped)
+            
+            if popped:
+                await auto_clean(popped)
+            
             if not check:
-                    await _clear_(chat_id)
-                    if chat_id in self.active_calls:
-                        try:
-                            await client.leave_call(chat_id)
-                        except NoActiveGroupCall:
-                            pass
-                        except Exception:
-                            pass
-                        finally:
-                            self.active_calls.discard(chat_id)
-                    return
-        except:
+                await _clear_(chat_id)
+                if chat_id in self.active_calls:
+                    try:
+                        await client.leave_call(chat_id)
+                    except NoActiveGroupCall:
+                        pass
+                    except Exception as e:
+                        LOGGER(__name__).error(f"Error leaving call in play: {e}")
+                    finally:
+                        self.active_calls.discard(chat_id)
+                return
+        except IndexError as e:
+            LOGGER(__name__).warning(f"IndexError in play for chat {chat_id}: {e}")
+            await _clear_(chat_id)
+            if chat_id in self.active_calls:
+                try:
+                    await client.leave_call(chat_id)
+                except Exception as e2:
+                    LOGGER(__name__).error(f"Error leaving call: {e2}")
+                finally:
+                    self.active_calls.discard(chat_id)
+            return
+        except Exception as e:
+            LOGGER(__name__).error(f"Error in play cleanup: {traceback.format_exc()}")
             try:
                 await _clear_(chat_id)
-                return await client.leave_call(chat_id)
-            except:
+                await client.leave_call(chat_id)
+            except Exception as e2:
+                LOGGER(__name__).error(f"Error in final cleanup: {e2}")
+            finally:
+                if chat_id in self.active_calls:
+                    self.active_calls.discard(chat_id)
+            return
+            
+        try:
+            # check list ထဲမှာ item တွေရှိမရှိ ထပ်မံစစ်ဆေးပါ
+            if not check or len(check) == 0:
+                LOGGER(__name__).warning(f"No items in queue after pop for chat {chat_id}")
+                await _clear_(chat_id)
+                if chat_id in self.active_calls:
+                    try:
+                        await client.leave_call(chat_id)
+                    except Exception:
+                        pass
+                    finally:
+                        self.active_calls.discard(chat_id)
                 return
-        else:
+                
             queued = check[0]["file"]
             language = await get_lang(chat_id)
             _ = get_string(language)
@@ -310,16 +491,25 @@ class Call:
                 db[chat_id][0]["speed"] = 1.0
 
             video = True if str(streamtype) == "video" else False
+            
+            # Enhanced audio parameters for all stream types
+            enhanced_params = self.get_enhanced_ffmpeg_params()
 
             if "live_" in queued:
                 n, link = await YouTube.video(videoid, True)
                 if n == 0:
                     return await app.send_message(original_chat_id, text=_["call_6"])
 
-                stream = dynamic_media_stream(path=link, video=video)
+                stream = dynamic_media_stream(
+                    path=link, 
+                    video=video,
+                    ffmpeg_params=enhanced_params
+                )
                 try:
                     await client.play(chat_id, stream)
-                except Exception:
+                    LOGGER(__name__).info(f"Playing live stream with enhanced audio in chat {chat_id}")
+                except Exception as e:
+                    LOGGER(__name__).error(f"Live stream play error: {e}")
                     return await app.send_message(original_chat_id, text=_["call_6"])
 
                 img = await get_thumb(videoid)
@@ -347,15 +537,22 @@ class Call:
                         videoid=True,
                         video=True if str(streamtype) == "video" else False,
                     )
-                except:
+                except Exception as e:
+                    LOGGER(__name__).error(f"Video download error: {e}")
                     return await mystic.edit_text(
                         _["call_6"], disable_web_page_preview=True
                     )
 
-                stream = dynamic_media_stream(path=file_path, video=video)
+                stream = dynamic_media_stream(
+                    path=file_path, 
+                    video=video,
+                    ffmpeg_params=enhanced_params
+                )
                 try:
                     await client.play(chat_id, stream)
-                except:
+                    LOGGER(__name__).info(f"Playing video with enhanced audio in chat {chat_id}")
+                except Exception as e:
+                    LOGGER(__name__).error(f"Video stream play error: {e}")
                     return await app.send_message(original_chat_id, text=_["call_6"])
 
                 img = await get_thumb(videoid)
@@ -376,10 +573,16 @@ class Call:
                 db[chat_id][0]["markup"] = "stream"
 
             elif "index_" in queued:
-                stream = dynamic_media_stream(path=videoid, video=video)
+                stream = dynamic_media_stream(
+                    path=videoid, 
+                    video=video,
+                    ffmpeg_params=enhanced_params
+                )
                 try:
                     await client.play(chat_id, stream)
-                except:
+                    LOGGER(__name__).info(f"Playing index stream with enhanced audio in chat {chat_id}")
+                except Exception as e:
+                    LOGGER(__name__).error(f"Index stream play error: {e}")
                     return await app.send_message(original_chat_id, text=_["call_6"])
 
                 button = stream_markup(_, chat_id)
@@ -393,10 +596,16 @@ class Call:
                 db[chat_id][0]["markup"] = "tg"
 
             else:
-                stream = dynamic_media_stream(path=queued, video=video)
+                stream = dynamic_media_stream(
+                    path=queued, 
+                    video=video,
+                    ffmpeg_params=enhanced_params
+                )
                 try:
                     await client.play(chat_id, stream)
-                except:
+                    LOGGER(__name__).info(f"Playing audio with enhanced quality in chat {chat_id}")
+                except Exception as e:
+                    LOGGER(__name__).error(f"Audio stream play error: {e}")
                     return await app.send_message(original_chat_id, text=_["call_6"])
 
                 if videoid == "telegram":
@@ -460,20 +669,38 @@ class Call:
                         )
                     db[chat_id][0]["mystic"] = run
                     db[chat_id][0]["markup"] = "stream"
-
+                    
+        except Exception as e:
+            LOGGER(__name__).error(f"Error in play function: {traceback.format_exc()}")
+            try:
+                await _clear_(chat_id)
+                await client.leave_call(chat_id)
+            except Exception:
+                pass
+            finally:
+                if chat_id in self.active_calls:
+                    self.active_calls.discard(chat_id)
 
     async def start(self) -> None:
-        LOGGER(__name__).info("Starting PyTgCalls Clients...")
-        if config.STRING1:
-            await self.one.start()
-        if config.STRING2:
-            await self.two.start()
-        if config.STRING3:
-            await self.three.start()
-        if config.STRING4:
-            await self.four.start()
-        if config.STRING5:
-            await self.five.start()
+        LOGGER(__name__).info("Starting PyTgCalls Clients with enhanced audio...")
+        try:
+            if config.STRING1:
+                await self.one.start()
+                LOGGER(__name__).info("Client 1 started")
+            if config.STRING2:
+                await self.two.start()
+                LOGGER(__name__).info("Client 2 started")
+            if config.STRING3:
+                await self.three.start()
+                LOGGER(__name__).info("Client 3 started")
+            if config.STRING4:
+                await self.four.start()
+                LOGGER(__name__).info("Client 4 started")
+            if config.STRING5:
+                await self.five.start()
+                LOGGER(__name__).info("Client 5 started")
+        except Exception as e:
+            LOGGER(__name__).error(f"Error starting clients: {e}")
 
     @capture_internal_err
     async def ping(self) -> str:
@@ -514,7 +741,6 @@ class Call:
                     await self.play(assistant, update.chat_id)
 
             except Exception as e:
-                import sys, traceback
                 exc_type, exc_obj, exc_tb = sys.exc_info()
                 full_trace = "".join(traceback.format_exception(exc_type, exc_obj, exc_tb))
                 caption = (
@@ -527,6 +753,16 @@ class Call:
 
         for assistant in assistants:
             assistant.on_update()(unified_update_handler)
+            
+    @capture_internal_err
+    async def set_audio_quality(self, bass_boost: bool = None, equalizer: str = None) -> None:
+        """အသံအရည်အသွေးကို ပြင်ဆင်ရန် function"""
+        if bass_boost is not None:
+            self.audio_enhancement["bass_boost"] = bass_boost
+        if equalizer is not None and equalizer in ["pop", "rock", "classical", "bass_boost", "treble_boost"]:
+            self.audio_enhancement["equalizer"] = equalizer
+        
+        LOGGER(__name__).info(f"Audio settings updated: {self.audio_enhancement}")
 
 
 Hotty = Call()
