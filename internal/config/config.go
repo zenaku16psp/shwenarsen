@@ -68,9 +68,9 @@ var (
 	DefaultLang    = getString("DEFAULT_LANG", "en")
 	DurationLimit  = int(getInt64("DURATION_LIMIT", 4200)) // in seconds
 	LeaveOnDemoted = getBool("LEAVE_ON_DEMOTED", false)
-	QueueLimit     = int(getInt64("QUEUE_LIMIT", 7))
-	SupportChat    = getString("SUPPORT_CHAT", "https://t.me/TheTeamVk")
-	SupportChannel = getString("SUPPORT_CHANNEL", "https://t.me/TheTeamVivek")
+	QueueLimit     = int(getInt64("QUEUE_LIMIT", 25))
+	SupportChat    = getString("SUPPORT_CHAT", "https://t.me/JBmusic_myanmar2002")
+	SupportChannel = getString("SUPPORT_CHANNEL", "https://t.me/JBmusic_myanmar")
 	StartTime      = time.Now()
 	CookiesLink    = getString("COOKIES_LINK")
 	SetCmds        = getBool("SET_CMDS", false)
@@ -78,11 +78,11 @@ var (
 
 	StartImage = getString(
 		"START_IMG_URL",
-		"https://raw.githubusercontent.com/Vivekkumar-IN/assets/master/images.png",
+		"https://files.catbox.moe/0gdu2w.jpg",
 	)
 	PingImage = getString(
 		"PING_IMG_URL",
-		"https://telegra.ph/file/91533956c91d0fd7c9f20.jpg",
+		"https://files.catbox.moe/0gdu2w.jpg",
 	)
 
 	LogFileName = "logs.txt"
