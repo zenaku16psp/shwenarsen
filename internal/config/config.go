@@ -60,7 +60,7 @@ var (
 	)
 
 	FallenAPIURL = getString("FALLEN_API_URL", "https://teaminflex.xyz")
-	FallenAPIKey = getString("FALLEN_API_KEY", "INFLEX60361928D"))
+	FallenAPIKey = getString("FALLEN_API_KEY", "INFLEX60361928D")
 
 	YoutubifyApiURL = getString("YOUTUBIFY_API_URL", "https://youtubify.me")
 	YoutubifyApiKey = getString("YOUTUBIFY_API_KEY")
