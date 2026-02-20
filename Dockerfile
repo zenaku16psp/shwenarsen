@@ -19,14 +19,14 @@ COPY install.sh ./
 COPY . .
 
 RUN chmod +x install.sh && \
-    # install.sh ရဲ့ options တွေကိုကြည့်ဖို့ (ဒီလိုင်းကို ဖြုတ်ပစ်လို့ရ)
-    ./install.sh --help || true && \
-    # သုံးလို့ရတဲ့ options တွေနဲ့ run မယ်
     ./install.sh -n --quiet && \
     CGO_ENABLED=1 go build -v -trimpath -ldflags="-w -s" -o app ./cmd/app/
 
 
 FROM debian:bookworm-slim
+
+# Create cookies directory
+RUN mkdir -p /app/cookies
 
 RUN apt-get update && \
     apt-get install -y \
@@ -48,6 +48,9 @@ RUN curl -fL \
 
 ENV DENO_INSTALL=/root/.deno
 ENV PATH=$DENO_INSTALL/bin:$PATH
+
+# Set YouTube cookies file path (can be overridden at runtime)
+ENV YOUTUBE_COOKIES_FILE=/app/cookies/cookies.txt
 
 RUN useradd -r -u 10001 appuser && \
     mkdir -p /app && \
