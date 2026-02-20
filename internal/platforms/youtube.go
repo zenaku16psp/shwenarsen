@@ -23,9 +23,12 @@ package platforms
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"net/url"
+	"os"
 	"os/exec"
 	"regexp"
 	"strconv"
@@ -40,7 +43,8 @@ import (
 )
 
 type YouTubePlatform struct {
-	name state.PlatformName
+	name        state.PlatformName
+	cookiesFile string
 }
 
 var (
@@ -49,6 +53,7 @@ var (
 		`(?i)^(?:https?:\/\/)?(?:www\.|m\.|music\.)?(?:youtube\.com|youtu\.be)\/\S+`,
 	)
 	youtubeCache = utils.NewCache[string, []*state.Track](1 * time.Hour)
+	cookiesPath  = "/app/cookies/cookies.txt" // Default path, can be changed via env
 )
 
 const (
@@ -59,10 +64,14 @@ const (
 )
 
 var yt = &YouTubePlatform{
-	name: PlatformYouTube,
+	name:        PlatformYouTube,
+	cookiesFile: os.Getenv("YOUTUBE_COOKIES_FILE"),
 }
 
 func init() {
+	if yt.cookiesFile == "" {
+		yt.cookiesFile = cookiesPath
+	}
 	Register(90, yt)
 }
 
@@ -91,7 +100,7 @@ func (yp *YouTubePlatform) GetTracks(
 				return updateCached(cached, video), nil
 			}
 
-			videoIDs, err := getPlaylist(trimmed)
+			videoIDs, err := yp.getPlaylist(trimmed)
 			if err != nil {
 				return nil, err
 			}
@@ -179,48 +188,70 @@ func (yp *YouTubePlatform) GetRecommendations(
 	nextURL := "https://m.youtube.com/youtubei/v1/next?key=" + innerTubeKey
 	var result map[string]any
 
-	resp, err := rc.R().
-		SetResult(&result).
-		SetBody(map[string]any{
-			"context": map[string]any{
-				"client": map[string]any{
-					"clientName":       innerTubeClientName,
-					"clientVersion":    innerTubeClientVersion,
-					"hl":               "en",
-					"gl":               "IN",
-					"utcOffsetMinutes": 330,
-				},
-				"user": map[string]any{
-					"lockedSafetyMode": false,
-				},
+	// Create HTTP client with cookie support
+	client := &http.Client{
+		Timeout: 30 * time.Second,
+	}
+
+	reqBody := map[string]any{
+		"context": map[string]any{
+			"client": map[string]any{
+				"clientName":       innerTubeClientName,
+				"clientVersion":    innerTubeClientVersion,
+				"hl":               "en",
+				"gl":               "IN",
+				"utcOffsetMinutes": 330,
 			},
-			"videoId":    track.ID,
-			"playlistId": "RD" + track.ID,
-		}).
-		SetHeaderMultiValues(map[string][]string{
-			"User-Agent": {
-				"Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Mobile Safari/537.36",
+			"user": map[string]any{
+				"lockedSafetyMode": false,
 			},
-			"Accept": {
-				"*/*",
-			},
-			"Content-Type": {
-				"application/json",
-			},
-			"Origin": {
-				"https://www.youtube.com",
-			},
-			"Referer": {
-				"https://www.youtube.com/watch?v=" + track.ID,
-			},
-		}).
-		Post(nextURL)
+		},
+		"videoId":    track.ID,
+		"playlistId": "RD" + track.ID,
+	}
+
+	jsonBody, err := json.Marshal(reqBody)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal request: %w", err)
+	}
+
+	req, err := http.NewRequest("POST", nextURL, bytes.NewBuffer(jsonBody))
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
+
+	// Set headers
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Mobile Safari/537.36")
+	req.Header.Set("Accept", "*/*")
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Origin", "https://www.youtube.com")
+	req.Header.Set("Referer", "https://www.youtube.com/watch?v="+track.ID)
+
+	// Add cookies if file exists
+	if yp.cookiesFile != "" {
+		if _, err := os.Stat(yp.cookiesFile); err == nil {
+			// Read and parse cookies file
+			cookies, err := yp.parseCookiesFile(yp.cookiesFile)
+			if err == nil {
+				for _, cookie := range cookies {
+					req.AddCookie(cookie)
+				}
+			}
+		}
+	}
+
+	resp, err := client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("request failed: %w", err)
 	}
+	defer resp.Body.Close()
 
-	if resp.StatusCode() < 200 || resp.StatusCode() >= 300 {
-		return nil, fmt.Errorf("unexpected status code: %d", resp.StatusCode())
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("unexpected status code: %d", resp.StatusCode)
+	}
+
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, fmt.Errorf("failed to decode response: %w", err)
 	}
 
 	var tracks []*state.Track
@@ -228,19 +259,6 @@ func (yp *YouTubePlatform) GetRecommendations(
 	if playlist := dig(result, "contents", "twoColumnWatchNextResults", "playlist", "playlist", "contents"); playlist != nil {
 		yp.parseNextResults(playlist, &tracks, track.Video, track.Requester)
 	}
-
-	/* secondaryContents := dig(
-		result,
-		"contents",
-		"twoColumnWatchNextResults",
-		"secondaryResults",
-		"secondaryResults",
-		"results",
-	)
-	if secondaryContents != nil && len(tracks) == 0 {
-		yp.parseNextResults(secondaryContents, &tracks, track.Video, track.Requester)
-	}
-	*/
 
 	if len(tracks) == 0 {
 		return nil, errors.New("no recommendations found")
@@ -295,7 +313,7 @@ func (yp *YouTubePlatform) parseNextResults(
 			if title == "" {
 				title = safeString(dig(vid, "title", "runs", 0, "text"))
 			}
-			thumb := getThumbnailURL(vid)
+			thumb := yp.getThumbnailURL(vid)
 			durationText := safeString(dig(vid, "lengthText", "simpleText"))
 
 			if durationText == "" || id == "" {
@@ -379,7 +397,7 @@ func (yp *YouTubePlatform) parseNextResults(
 			if title == "" {
 				title = safeString(dig(vid, "title", "runs", 0, "text"))
 			}
-			thumb := getThumbnailURL(vid)
+			thumb := yp.getThumbnailURL(vid)
 			durationText := safeString(dig(vid, "lengthText", "simpleText"))
 
 			if durationText == "" || id == "" {
@@ -440,7 +458,7 @@ func (yp *YouTubePlatform) VideoSearch(
 	var tracks []*state.Track
 	var err error
 
-	tracks, err = searchYouTube(query)
+	tracks, err = yp.searchYouTube(query)
 	if err != nil {
 		return nil, fmt.Errorf("ytsearch failed: %w", err)
 	}
@@ -458,7 +476,7 @@ func (yp *YouTubePlatform) VideoSearch(
 	return tracks, nil
 }
 
-func (yt *YouTubePlatform) normalizeYouTubeURL(
+func (yp *YouTubePlatform) normalizeYouTubeURL(
 	input string,
 ) (string, string, error) {
 	u, err := url.Parse(strings.TrimSpace(input))
@@ -499,13 +517,12 @@ func (yt *YouTubePlatform) normalizeYouTubeURL(
 	return "", "", errors.New("unsupported YouTube URL or missing video ID")
 }
 
-func getPlaylist(pUrl string) ([]string, error) {
+func (yp *YouTubePlatform) getPlaylist(pUrl string) ([]string, error) {
 	if strings.Contains(pUrl, "&") {
 		pUrl = strings.Split(pUrl, "&")[0]
 	}
 
-	cmd := exec.Command(
-		"yt-dlp",
+	args := []string{
 		"-i",
 		"--compat-options",
 		"no-youtube-unavailable-videos",
@@ -514,8 +531,18 @@ func getPlaylist(pUrl string) ([]string, error) {
 		"--skip-download",
 		"--playlist-end",
 		strconv.Itoa(config.QueueLimit),
-		pUrl,
-	)
+	}
+
+	// Add cookies if file exists
+	if yp.cookiesFile != "" {
+		if _, err := os.Stat(yp.cookiesFile); err == nil {
+			args = append(args, "--cookies", yp.cookiesFile)
+		}
+	}
+
+	args = append(args, pUrl)
+
+	cmd := exec.Command("yt-dlp", args...)
 	var out bytes.Buffer
 	var stderr bytes.Buffer
 	cmd.Stdout = &out
@@ -527,6 +554,43 @@ func getPlaylist(pUrl string) ([]string, error) {
 	}
 
 	return strings.Split(strings.TrimSpace(out.String()), "\n"), nil
+}
+
+func (yp *YouTubePlatform) parseCookiesFile(path string) ([]*http.Cookie, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+
+	var cookies []*http.Cookie
+	lines := strings.Split(string(data), "\n")
+
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+
+		parts := strings.Split(line, "\t")
+		if len(parts) < 7 {
+			continue
+		}
+
+		// Netscape cookie format
+		cookie := &http.Cookie{
+			Domain:   parts[0],
+			Path:     parts[2],
+			Secure:   parts[3] == "TRUE",
+			Expires:  time.Unix(parseInt64(parts[4]), 0),
+			Name:     parts[5],
+			Value:    parts[6],
+			HttpOnly: false,
+		}
+
+		cookies = append(cookies, cookie)
+	}
+
+	return cookies, nil
 }
 
 func updateCached(arr []*state.Track, video bool) []*state.Track {
@@ -545,66 +609,78 @@ func updateCached(arr []*state.Track, video bool) []*state.Track {
 	return out
 }
 
-// The following search functions are adapted from TgMusicBot.
-// Copyright (c) 2025 Ashok Shau
-// Licensed under GNU GPL v3
-// See https://github.com/AshokShau/TgMusicBot
-//
-// searchYouTube scrapes YouTube results page
-
-func searchYouTube(query string) ([]*state.Track, error) {
+func (yp *YouTubePlatform) searchYouTube(query string) ([]*state.Track, error) {
 	searchURL := "https://m.youtube.com/youtubei/v1/search?key=" + innerTubeKey
 	var result map[string]any
 
-	resp, err := rc.
-		R().
-		SetResult(&result).
-		SetBody(map[string]any{
-			"context": map[string]any{
-				"client": map[string]any{
-					"clientName":       innerTubeClientName,
-					"clientVersion":    innerTubeClientVersion,
-					"newVisitorCookie": true,
-					"acceptHeader":     "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-					"hl":               "en-IN",
-					"gl":               "IN",
-				},
+	// Create HTTP client with cookie support
+	client := &http.Client{
+		Timeout: 30 * time.Second,
+	}
+
+	reqBody := map[string]any{
+		"context": map[string]any{
+			"client": map[string]any{
+				"clientName":       innerTubeClientName,
+				"clientVersion":    innerTubeClientVersion,
+				"newVisitorCookie": true,
+				"acceptHeader":     "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+				"hl":               "en-IN",
+				"gl":               "IN",
 			},
-			"request": map[string]any{
-				"useSsl": true,
-			},
-			"user": map[string]any{
-				"lockedSafetyMode": false,
-			},
-			"params": "CAASAhAB",
-			"query":  query,
-		}).
-		SetHeaderMultiValues(map[string][]string{
-			"User-Agent": {
-				"Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Mobile Safari/537.36",
-			},
-			"Accept": {
-				"*/*",
-			},
-			"Content-Type": {
-				"application/json",
-			},
-			"x-origin": {
-				"https://m.youtube.com",
-			},
-			"origin": {
-				"https://m.youtube.com",
-			},
-			"accept-language": {
-				"en-IN",
-			},
-		}).Post(searchURL)
+		},
+		"request": map[string]any{
+			"useSsl": true,
+		},
+		"user": map[string]any{
+			"lockedSafetyMode": false,
+		},
+		"params": "CAASAhAB",
+		"query":  query,
+	}
+
+	jsonBody, err := json.Marshal(reqBody)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal request: %w", err)
+	}
+
+	req, err := http.NewRequest("POST", searchURL, bytes.NewBuffer(jsonBody))
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
+
+	// Set headers
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Mobile Safari/537.36")
+	req.Header.Set("Accept", "*/*")
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("x-origin", "https://m.youtube.com")
+	req.Header.Set("origin", "https://m.youtube.com")
+	req.Header.Set("accept-language", "en-IN")
+
+	// Add cookies if file exists
+	if yp.cookiesFile != "" {
+		if _, err := os.Stat(yp.cookiesFile); err == nil {
+			cookies, err := yp.parseCookiesFile(yp.cookiesFile)
+			if err == nil {
+				for _, cookie := range cookies {
+					req.AddCookie(cookie)
+				}
+			}
+		}
+	}
+
+	resp, err := client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("request failed: %w", err)
 	}
+	defer resp.Body.Close()
 
-	if resp.StatusCode() < 200 || resp.StatusCode() >= 300 {
-		return nil, fmt.Errorf("unexpected status code: %d", resp.StatusCode())
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("unexpected status code: %d", resp.StatusCode)
+	}
+
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, fmt.Errorf("failed to decode response: %w", err)
 	}
 
 	contents := dig(
@@ -620,28 +696,28 @@ func searchYouTube(query string) ([]*state.Track, error) {
 	}
 
 	var tracks []*state.Track
-	parseSearchResults(contents, &tracks)
+	yp.parseSearchResults(contents, &tracks)
 	return tracks, nil
 }
 
-func parseSearchResults(node any, tracks *[]*state.Track) {
+func (yp *YouTubePlatform) parseSearchResults(node any, tracks *[]*state.Track) {
 	switch v := node.(type) {
 
 	case []any:
 		for _, item := range v {
-			parseSearchResults(item, tracks)
+			yp.parseSearchResults(item, tracks)
 		}
 
 	case map[string]any:
 		if vid, ok := dig(v, "videoRenderer").(map[string]any); ok {
 
-			if isLiveVideo(vid) {
+			if yp.isLiveVideo(vid) {
 				return
 			}
 
 			id := safeString(vid["videoId"])
 			title := safeString(dig(vid, "title", "runs", 0, "text"))
-			thumb := getThumbnailURL(vid)
+			thumb := yp.getThumbnailURL(vid)
 			durationText := safeString(dig(vid, "lengthText", "simpleText"))
 
 			if durationText == "" {
@@ -661,13 +737,13 @@ func parseSearchResults(node any, tracks *[]*state.Track) {
 			youtubeCache.Set("track:"+t.ID, []*state.Track{t})
 		} else {
 			for _, child := range v {
-				parseSearchResults(child, tracks)
+				yp.parseSearchResults(child, tracks)
 			}
 		}
 	}
 }
 
-func isLiveVideo(videoRenderer map[string]any) bool {
+func (yp *YouTubePlatform) isLiveVideo(videoRenderer map[string]any) bool {
 	if badges, ok := dig(videoRenderer, "badges").([]any); ok {
 		for _, badge := range badges {
 			if badgeMap, ok := badge.(map[string]any); ok {
@@ -697,7 +773,7 @@ func isLiveVideo(videoRenderer map[string]any) bool {
 	return false
 }
 
-func getThumbnailURL(vid map[string]any) string {
+func (yp *YouTubePlatform) getThumbnailURL(vid map[string]any) string {
 	thumbs, ok := dig(vid, "thumbnail", "thumbnails").([]any)
 	if !ok || len(thumbs) == 0 {
 		return ""
@@ -757,6 +833,16 @@ func atoi(s string) int {
 	for _, r := range s {
 		if r >= '0' && r <= '9' {
 			n = n*10 + int(r-'0')
+		}
+	}
+	return n
+}
+
+func parseInt64(s string) int64 {
+	var n int64
+	for _, r := range s {
+		if r >= '0' && r <= '9' {
+			n = n*10 + int64(r-'0')
 		}
 	}
 	return n
