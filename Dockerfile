@@ -19,7 +19,10 @@ COPY install.sh ./
 COPY . .
 
 RUN chmod +x install.sh && \
-    ./install.sh -n --quiet --skip-summary && \
+    # install.sh ရဲ့ options တွေကိုကြည့်ဖို့ (ဒီလိုင်းကို ဖြုတ်ပစ်လို့ရ)
+    ./install.sh --help || true && \
+    # သုံးလို့ရတဲ့ options တွေနဲ့ run မယ်
+    ./install.sh -n --quiet && \
     CGO_ENABLED=1 go build -v -trimpath -ldflags="-w -s" -o app ./cmd/app/
 
 
